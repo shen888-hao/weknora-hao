@@ -17,13 +17,13 @@ jobs:
       - name: Pull image with retry
         run: |
           for i in 1 2 3; do
-            docker pull opendatalab/mineru-cpu:latest && break
+            docker pull alexsuntop/mineru:latest && break
             sleep 30
           done
 
       - name: Save and split
         run: |
-          docker save opendatalab/mineru-cpu:latest | gzip -1 > mineru-cpu.tar.gz
+          docker save alexsuntop/mineru:latest | gzip -1 > mineru-cpu.tar.gz
           ls -lh mineru-cpu.tar.gz
           
           # 必分卷，1.9GB/个
