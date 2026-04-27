@@ -7,29 +7,67 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Free disk space
         run: |
-          # GitHub 默认盘 14GB，清理出空间
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
           sudo apt-get clean
           docker system prune -af
+          df -h
 
-      - name: Pull image with retry
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build MinerU CPU image
         run: |
-          for i in 1 2 3; do
-            docker pull alexsuntop/mineru:latest && break
-            sleep 30
-          done
+          # 创建 Dockerfile，用 CPU 版本的基础镜像
+          cat > Dockerfile.mineru << 'EOF'
+          # 用 PyTorch CPU 基础镜像，不是 vLLM GPU 镜像
+          FROM python:3.10-slim
+
+          # Install dependencies
+          RUN apt-get update && \
+              apt-get install -y \
+                  fonts-noto-core \
+                  fonts-noto-cjk \
+                  fontconfig \
+                  libgl1 \
+                  wget \
+                  git && \
+              fc-cache -fv && \
+              apt-get clean && \
+              rm -rf /var/lib/apt/lists/*
+
+          # Install mineru
+          RUN pip install --no-cache-dir -U 'mineru[core]>=3.0.0' && \
+              pip cache purge
+
+          # Download models
+          RUN mineru-models-download -s modelscope -m all
+
+          # Set environment
+          ENV MINERU_MODEL_SOURCE=local
+          ENV PYTHONUNBUFFERED=1
+
+          ENTRYPOINT ["/bin/bash", "-c", "exec \"$@\"", "--"]
+          CMD ["python3", "-m", "magic_pdf.cli.magicpdf"]
+          EOF
+
+          # Build
+          docker build -f Dockerfile.mineru -t mineru-cpu:latest . 2>&1 | tee build.log
 
       - name: Save and split
         run: |
-          docker save alexsuntop/mineru:latest | gzip -1 > mineru-cpu.tar.gz
+          docker images
+          docker save mineru-cpu:latest | gzip -1 > mineru-cpu.tar.gz
           ls -lh mineru-cpu.tar.gz
           
-          # 必分卷，1.9GB/个
+          # 必分卷
           split -b 1900m mineru-cpu.tar.gz mineru-cpu.tar.gz.part-
-          rm mineru-cpu.tar.gz  # 删大文件省空间
-          ls -lh mineru-cpu.tar.gz.part-*
+          rm mineru-cpu.tar.gz
+          ls -lh
 
       - name: Upload to Release
         env:
@@ -39,10 +77,9 @@ jobs:
           gh release create "$TAG" \
             --repo ${{ github.repository }} \
             --title "MinerU CPU $TAG" \
-            --notes "Split archives, cat to reassemble"
+            --notes "Built from official Dockerfile"
           
-          # 逐个上传，避免命令太长
           for f in mineru-cpu.tar.gz.part-*; do
-            echo "Uploading $f ..."
+            echo "Uploading $f ($(( $(stat -c%s "$f") / 1024 / 1024 ))MB)"
             gh release upload "$TAG" "$f" --repo ${{ github.repository }}
           done
