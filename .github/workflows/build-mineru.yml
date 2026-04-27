@@ -3,6 +3,11 @@ name: Build MinerU Image
 on:
   workflow_dispatch:
 
+# 必须增加这些权限，否则上传 Release 或 Artifact 可能报错
+permissions:
+  contents: write
+  actions: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -22,12 +27,8 @@ jobs:
 
       - name: Build MinerU CPU image
         run: |
-          # 创建 Dockerfile，用 CPU 版本的基础镜像
           cat > Dockerfile.mineru << 'EOF'
-          # 用 PyTorch CPU 基础镜像，不是 vLLM GPU 镜像
           FROM python:3.10-slim
-
-          # Install dependencies
           RUN apt-get update && \
               apt-get install -y \
                   fonts-noto-core \
@@ -39,23 +40,14 @@ jobs:
               fc-cache -fv && \
               apt-get clean && \
               rm -rf /var/lib/apt/lists/*
-
-          # Install mineru
           RUN pip install --no-cache-dir -U 'mineru[core]>=3.0.0' && \
               pip cache purge
-
-          # Download models
           RUN mineru-models-download -s modelscope -m all
-
-          # Set environment
           ENV MINERU_MODEL_SOURCE=local
           ENV PYTHONUNBUFFERED=1
-
           ENTRYPOINT ["/bin/bash", "-c", "exec \"$@\"", "--"]
           CMD ["python3", "-m", "magic_pdf.cli.magicpdf"]
           EOF
-
-          # Build
           docker build -f Dockerfile.mineru -t mineru-cpu:latest . 2>&1 | tee build.log
 
       - name: Save and split
@@ -63,8 +55,6 @@ jobs:
           docker images
           docker save mineru-cpu:latest | gzip -1 > mineru-cpu.tar.gz
           ls -lh mineru-cpu.tar.gz
-          
-          # 必分卷
           split -b 1900m mineru-cpu.tar.gz mineru-cpu.tar.gz.part-
           rm mineru-cpu.tar.gz
           ls -lh
@@ -74,12 +64,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="mineru-cpu-$(date +%Y%m%d-%H%M%S)"
+          # 增加 || true 防止因创建失败导致后续上传停止
           gh release create "$TAG" \
             --repo ${{ github.repository }} \
             --title "MinerU CPU $TAG" \
-            --notes "Built from official Dockerfile"
+            --notes "Built from official Dockerfile" || true
           
           for f in mineru-cpu.tar.gz.part-*; do
             echo "Uploading $f ($(( $(stat -c%s "$f") / 1024 / 1024 ))MB)"
-            gh release upload "$TAG" "$f" --repo ${{ github.repository }}
+            gh release upload "$TAG" "$f" --repo ${{ github.repository }} --clobber
           done
+
+      - name: Upload Image Parts to Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mineru-cpu-split-image
+          path: mineru-cpu.tar.gz.part-*
+          retention-days: 1
